@@ -5,7 +5,7 @@
 ![Finance](https://img.shields.io/badge/API-Yahoo%20Finance-red.svg)
 
 # 📈 Market Hunter AI
-
+---
 A professional-grade Telegram Bot for real-time stock market monitoring, technical analysis, and portfolio tracking.
 
 ## ✨ Key Features
@@ -103,3 +103,4 @@ Below is a list of available commands with examples of how to use them:
 ## ⚠️ Disclaimer
 
 This bot is for **educational and informational purposes only**. It does not constitute financial advice. Always perform your own due diligence before making any investment decisions. The author is not responsible for any financial losses incurred through the use of this software.
+

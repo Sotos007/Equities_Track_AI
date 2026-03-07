@@ -1,7 +1,7 @@
 import logging
 import asyncio
 import pytz
-from datetime import time
+from datetime import time, datetime, timedelta
 from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes, CallbackQueryHandler
 from handlers import BotHandlers
 
@@ -15,6 +15,7 @@ WATCHLIST = [
 # Initialize bot-specific logger
 logger_bot = logging.getLogger("BOT")
 
+
 class InvestmentBot:
     def __init__(self, token, db, engine):
         """
@@ -27,46 +28,68 @@ class InvestmentBot:
         self.db = db
         self.engine = engine
         self.handlers = BotHandlers(db, engine)
-        logger_bot.info("InvestmentBot initialized with DB and Engine dependencies.")
+
+        # --- ALERT COOLDOWN LOGIC ---  
+        self.last_alerts = {}
+        self.alert_cooldown = timedelta(hours=4)
+
+        logger_bot.info("InvestmentBot initialized with DB, Engine and Alert Cooldown logic.")
 
     async def run_scanner(self, context: ContextTypes.DEFAULT_TYPE):
         """
-        Periodically scans the WATCHLIST for technical signals (RSI/EMA).
-        Uses bulk analysis to minimize API overhead.
+        Periodically scans the WATCHLIST.
+        Sleeps (no telegram messages) when market is closed or on weekends.
         """
         chat_id = self.db.get_chat_id()
         if not chat_id:
-            logger_bot.warning("Scanner: No active chat_id found in database. Skipping scan.")
             return
 
+        # Smart Sleep Check
+        market_open = self.engine.is_market_open()
+
         logger_bot.info(f"Scanner: Starting bulk analysis for {len(WATCHLIST)} symbols...")
-        # Running synchronous engine logic in a separate thread to keep the bot responsive
         results = await asyncio.to_thread(self.engine.analyze_watchlist_bulk, WATCHLIST)
 
+        if not market_open:
+            logger_bot.info("Scanner: Market is CLOSED. Skipping Telegram alerts (Silent Mode).")
+            return
+
+        current_time = datetime.now()
+
         for symbol, (sig, p) in results.items():
-            logger_bot.info(f"Scanner Signal: {symbol} identified as {sig}")
-            await context.bot.send_message(
-                chat_id=chat_id,
-                text=f"**Opportunity Alert**\nSymbol: #{symbol}\nSignal: {sig} at ${p:.2f}",
-                parse_mode='Markdown'
-            )
+            last_time = self.last_alerts.get(symbol)
+
+            if last_time and (current_time - last_time) < self.alert_cooldown:
+                logger_bot.info(f"Scanner: Skipping alert for {symbol} (Cooldown active).")
+                continue
+
+            if sig != "HOLD":
+                logger_bot.info(f"Scanner Signal: {symbol} identified as {sig}. Sending Alert...")
+                self.last_alerts[symbol] = current_time
+
+                await context.bot.send_message(
+                    chat_id=chat_id,
+                    text=f"🚨 **Alert**\nSymbol: **#{symbol}**\nSignal: `{sig}` at `${p:.2f}`",
+                    parse_mode='Markdown'
+                )
 
     async def background_monitor(self, context: ContextTypes.DEFAULT_TYPE):
         """
-        Improved Monitor with Grouped API Calls.
-        Checks active portfolio for Trailing Stop conditions (5% drop from peak).
+        Checks active portfolio for Trailing Stop conditions.
+        Stays silent during weekends and off-market hours.
         """
         chat_id = self.db.get_chat_id()
         if not chat_id:
             return
+
+        # Smart Sleep Check
+        market_open = self.engine.is_market_open()
 
         logger_bot.info("Monitor: Fetching active portfolio for Trailing Stop checks...")
         portfolio = self.db.get_active_portfolio()
         if not portfolio:
-            logger_bot.info("Monitor: Portfolio is empty. Standing by.")
             return
 
-        # Fetch unique symbols to avoid redundant API calls for multiple entries of the same ticker
         unique_symbols = list(set(row[1] for row in portfolio))
         prices_cache = {}
 
@@ -77,45 +100,39 @@ class InvestmentBot:
 
         for row in portfolio:
             try:
-                # Expecting: (id, symbol, buy_price, invested, peak_price)
                 db_id, symbol, _buy_price, _invested, peak_price = row
                 current_price = prices_cache.get(symbol)
 
                 if current_price:
-                    # Update peak price if the current price is higher
                     if current_price > peak_price:
                         self.db.update_peak_price(db_id, current_price)
                         peak_price = current_price
                         logger_bot.info(f"Monitor: {symbol} (ID:{db_id}) reached new Peak: ${peak_price}")
 
-                    # Calculate drop from the highest recorded price
-                    drop = ((peak_price - current_price) / peak_price) * 100
-                    if drop >= 5.0:
-                        logger_bot.warning(f"Monitor: Trailing Stop triggered for {symbol} (-{drop:.2f}%)")
-                        msg = (f"🛡️ **Trailing Stop Alert**\n\n"
-                               f"Symbol: **{symbol}**\n"
-                               f"Peak: `${peak_price:.2f}`\n"
-                               f"Now: `${current_price:.2f}`\n"
-                               f"Drop: `{drop:.2f}%` 🧨")
-                        await context.bot.send_message(chat_id=chat_id, text=msg, parse_mode='Markdown')
+                    # Only send Telegram message if market is open
+                    if market_open:
+                        drop = ((peak_price - current_price) / peak_price) * 100
+                        if drop >= 5.0:
+                            logger_bot.warning(f"Monitor: Trailing Stop triggered for {symbol} (-{drop:.2f}%)")
+                            msg = (f"🛡️ **Trailing Stop Alert**\n\n"
+                                   f"Symbol: **{symbol}**\n"
+                                   f"Peak: `${peak_price:.2f}`\n"
+                                   f"Now: `${current_price:.2f}`\n"
+                                   f"Drop: `{drop:.2f}%` 🧨")
+                            await context.bot.send_message(chat_id=chat_id, text=msg, parse_mode='Markdown')
+                    else:
+                        logger_bot.info(f"Monitor: Market closed. Silent tracking for {symbol}.")
             except Exception as e:
                 logger_bot.error(f"Monitor Error for record ID {row[0]}: {str(e)}")
 
     @staticmethod
     async def error_handler(_update: object, context: ContextTypes.DEFAULT_TYPE):
-        """
-        Global error handler for the Telegram application.
-        Logs network issues without terminating the bot execution.
-        """
         if "httpx.ReadError" in str(context.error):
-            logger_bot.warning("Network: Connection with Telegram was temporarily interrupted. Reconnecting...")
+            logger_bot.warning("Network: Connection interrupted. Reconnecting...")
         else:
             logger_bot.error(f"System: Unexpected error occurred: {context.error}")
 
     async def send_daily_report(self, context: ContextTypes.DEFAULT_TYPE):
-        """
-        Generates and sends an End-Of-Day summary of portfolio performance.
-        """
         chat_id = self.db.get_chat_id()
         if not chat_id:
             return
@@ -145,10 +162,8 @@ class InvestmentBot:
                 perf_data.append({"s": symbol, "p": p_pct})
 
         if not perf_data:
-            logger_bot.info("Report: No price data available for daily report.")
             return
 
-        # Sort performance data to find Top/Worst performers
         perf_data.sort(key=lambda x: x['p'])
 
         summary = (
@@ -163,17 +178,9 @@ class InvestmentBot:
         logger_bot.info("Report: Daily summary sent successfully.")
 
     def run(self):
-        """
-        Configures and starts the Telegram Bot application.
-        Sets up handlers, scheduled jobs, and polling.
-        """
         app = ApplicationBuilder().token(self.token).build()
-
-        # Error handling registration
         app.add_error_handler(self.error_handler)
 
-        # Command Handler registration
-        # Note: These methods must exist in the BotHandlers class
         app.add_handler(CommandHandler("start", self.handlers.start))
         app.add_handler(CommandHandler("help", self.handlers.help_command))
         app.add_handler(CommandHandler("analyze", self.handlers.analyze))
@@ -185,16 +192,12 @@ class InvestmentBot:
         app.add_handler(CommandHandler("myid", self.handlers.get_my_id))
         app.add_handler(CallbackQueryHandler(self.handlers.status_refresh_callback, pattern="refresh_status"))
 
-        # Job Queue setup for automated tasks
         jq = app.job_queue
-        # Run market scanner every 30 minutes
-        jq.run_repeating(self.run_scanner, interval=1800, first=10)
-        # Run portfolio monitor every 15 minutes
-        jq.run_repeating(self.background_monitor, interval=900, first=20)
+        jq.run_repeating(self.run_scanner, interval=900, first=10)
+        jq.run_repeating(self.background_monitor, interval=1200, first=20)
 
-        # Daily EOD Report scheduled for 23:00 Athens Time
         at_time = time(23, 0, 0, tzinfo=pytz.timezone('Europe/Athens'))
         jq.run_daily(self.send_daily_report, time=at_time)
 
-        logger_bot.info("Bot: Starting polling. All systems active.")
+        logger_bot.info("Bot: Starting polling. All systems active with Smart Sleep.")
         app.run_polling()

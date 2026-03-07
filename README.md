@@ -33,6 +33,23 @@ A professional-grade Telegram Bot for real-time stock market monitoring, technic
 
 ---
 
+## 🕒 Market Operation & Smart Sleep
+
+The bot is synchronized with the **New York Stock Exchange (NYSE)** hours to ensure data accuracy and avoid "ghost" alerts during off-market hours.
+
+| Feature          | New York (EST) | Athens (EET) | Status              |
+|:-----------------|:---------------|:-------------|:--------------------|
+| **Market Open**  | 09:30          | 16:30        | 🟢 Active Scanning  |
+| **Market Close** | 16:00          | 23:00        | 🌙 Smart Sleep Mode |
+| **Weekends**     | Closed         | Closed       | 😴 Hibernation      |
+
+### How it works:
+* **Live Session:** Between 16:30 and 23:00 EET, the bot performs real-time technical analysis and sends instant Telegram alerts.
+* **Smart Sleep:** Outside these hours and during weekends, the bot enters a "Silent Mode". It continues to track data internally but suppresses all Telegram notifications to prevent false signals from low-volume after-hours trading.
+* **Daily Report:** A summary of the day's performance is sent every day at **23:00 EET**, exactly when the market closes.
+
+---
+
 ## 🧮 Calculation Logic
 
 The bot follows standardized financial formulas to ensure data accuracy:
@@ -103,4 +120,5 @@ Below is a list of available commands with examples of how to use them:
 ## ⚠️ Disclaimer
 
 This bot is for **educational and informational purposes only**. It does not constitute financial advice. Always perform your own due diligence before making any investment decisions. The author is not responsible for any financial losses incurred through the use of this software.
+
 

@@ -46,8 +46,8 @@ class TradingEngine:
         """
         logger_engine.info(f"BULK_SCAN: Fetching data for {len(symbols)} symbols...")
         try:
-            # Batch download 3 months of data for all symbols
-            data = yf.download(symbols, period="3mo", group_by='ticker', progress=False)
+            # Batch download 6 months of data for all symbols [cite: 2026-03-02]
+            data = yf.download(symbols, period="6mo", group_by='ticker', progress=False)
             results = {}
 
             for symbol in symbols:
@@ -78,7 +78,7 @@ class TradingEngine:
                 if rsi < 35 and price > ema20:
                     results[symbol] = ("BUY", round(float(price), 2))
                 elif rsi > 65 and price < ema20:
-                    results[symbol] = ("SELL", round(float(price), 2))
+                    results[symbol] = ("NOT BUY", round(float(price), 2))
 
             return results
         except Exception as e:
@@ -157,13 +157,13 @@ class TradingEngine:
     def analyze_trend(symbol):
         """
         Performs technical analysis (RSI & EMA) for a single ticker.
-        Requires 3 months of historical data for reliable calculation of indicators.
+        Requires 6 months of historical data for reliable calculation. [cite: 2026-03-02]
         """
         symbol_upper = symbol.upper()
         try:
             ticker = yf.Ticker(symbol_upper)
-            # Fetching 3mo data to ensure EMA20 and RSI14 stability
-            df = ticker.history(period="3mo")
+            # Fetching 6mo data to ensure EMA20 and RSI14 stability [cite: 2026-03-02]
+            df = ticker.history(period="6mo")
 
             if df.empty or len(df) < 20:
                 logger_engine.warning(f"ANALYZE_SKIP: Insufficient historical data for {symbol_upper}")
@@ -193,7 +193,7 @@ class TradingEngine:
             if current_rsi < 35 and current_p > current_ema:
                 return "BUY", current_p
             elif current_rsi > 65 and current_p < current_ema:
-                return "SELL", current_p
+                return "NOT BUY", current_p
             else:
                 return "HOLD", current_p
 
